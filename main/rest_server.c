@@ -82,6 +82,8 @@ const char *mode_to_string(enum pp_mode_t mode)
 }
 
 static const char *REST_TAG = "REST";
+#define OTA_POLICY_KEY_BLOCK_HARDCODED "ota_block_hc"
+#define OTA_HARDCODED_HOST "download.smartsolutions4home.com"
 #define REST_CHECK(a, str, goto_tag, ...)                                         \
     do {                                                                          \
         if (!(a)) {                                                               \
@@ -698,6 +700,106 @@ static esp_err_t versions_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static bool ota_block_hardcoded_server_enabled(void)
+{
+    nvs_handle_t nvs;
+    uint8_t enabled = 1; // secure default
+    if (nvs_open("storage", NVS_READONLY, &nvs) == ESP_OK) {
+        if (nvs_get_u8(nvs, OTA_POLICY_KEY_BLOCK_HARDCODED, &enabled) != ESP_OK) {
+            enabled = 1;
+        }
+        nvs_close(nvs);
+    }
+    return enabled != 0;
+}
+
+static esp_err_t ota_set_block_hardcoded_server(bool enabled)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = nvs_set_u8(nvs, OTA_POLICY_KEY_BLOCK_HARDCODED, enabled ? 1 : 0);
+    if (err == ESP_OK) {
+        err = nvs_commit(nvs);
+    }
+    nvs_close(nvs);
+    return err;
+}
+
+static bool ota_url_is_hardcoded_server(const char *url)
+{
+    if (!url) {
+        return false;
+    }
+    return strcasestr(url, OTA_HARDCODED_HOST) != NULL;
+}
+
+static bool ota_url_blocked_by_policy(const char *url)
+{
+    return ota_block_hardcoded_server_enabled() && ota_url_is_hardcoded_server(url);
+}
+
+// Handler for GET /api/v1/ota/security endpoint
+static esp_err_t ota_security_get_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    const bool blocked = ota_block_hardcoded_server_enabled();
+    char resp[64];
+    snprintf(resp, sizeof(resp), "{\"block_hardcoded_servers\":%s}", blocked ? "true" : "false");
+    httpd_resp_sendstr(req, resp);
+    return ESP_OK;
+}
+
+// Handler for POST /api/v1/ota/security endpoint
+static esp_err_t ota_security_post_handler(httpd_req_t *req)
+{
+    int total_len = req->content_len;
+    int cur_len = 0;
+    int received = 0;
+    char *buf = ((rest_server_context_t *)(req->user_ctx))->scratch;
+
+    if (total_len >= SCRATCH_BUFSIZE) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Content too long");
+        return ESP_FAIL;
+    }
+
+    while (cur_len < total_len) {
+        received = httpd_req_recv(req, buf + cur_len, total_len - cur_len);
+        if (received <= 0) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to receive data");
+            return ESP_FAIL;
+        }
+        cur_len += received;
+    }
+    buf[cur_len] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    if (!root) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    cJSON *item = cJSON_GetObjectItem(root, "block_hardcoded_servers");
+    if (!item || (!cJSON_IsBool(item) && !cJSON_IsNumber(item))) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing or invalid 'block_hardcoded_servers'");
+        return ESP_FAIL;
+    }
+
+    bool enabled = cJSON_IsBool(item) ? cJSON_IsTrue(item) : (item->valueint != 0);
+    cJSON_Delete(root);
+
+    if (ota_set_block_hardcoded_server(enabled) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to save OTA security policy");
+        return ESP_FAIL;
+    }
+
+    httpd_resp_sendstr(req, "OTA security policy updated");
+    return ESP_OK;
+}
+
 // Handler for GET /api/v1/ota/progress endpoint
 static esp_err_t ota_progress_get_handler(httpd_req_t *req)
 {
@@ -721,6 +823,7 @@ static esp_err_t mqtt_get_handler(httpd_req_t *req)
         char broker[101] = ""; size_t len = sizeof(broker);
         nvs_get_str(nvs, "mqtt_host", broker, &len);
         cJSON_AddStringToObject(resp_obj, "broker", broker);
+        cJSON_AddStringToObject(resp_obj, "host", broker);
         uint16_t port = 1883;
         nvs_get_u16(nvs, "mqtt_port", &port);
         cJSON_AddNumberToObject(resp_obj, "port", port);
@@ -792,6 +895,11 @@ static esp_err_t ota_firmware_post_handler(httpd_req_t *req)
         cJSON_Delete(root);
         return ESP_FAIL;
     }
+    if (ota_url_blocked_by_policy(url_item->valuestring)) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Blocked by OTA security policy");
+        return ESP_FAIL;
+    }
 
     esp_err_t ret = ota_start(url_item->valuestring, OTA_TYPE_FIRMWARE);
     cJSON_Delete(root);
@@ -835,6 +943,11 @@ static esp_err_t ota_web_app_post_handler(httpd_req_t *req)
     if (!url_item || !cJSON_IsString(url_item)) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing or invalid 'url'");
         cJSON_Delete(root);
+        return ESP_FAIL;
+    }
+    if (ota_url_blocked_by_policy(url_item->valuestring)) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Blocked by OTA security policy");
         return ESP_FAIL;
     }
 
@@ -881,6 +994,11 @@ static esp_err_t ota_both_post_handler(httpd_req_t *req)
         !web_url_item || !cJSON_IsString(web_url_item)) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing or invalid 'firmware_url' or 'web_app_url'");
         cJSON_Delete(root);
+        return ESP_FAIL;
+    }
+    if (ota_url_blocked_by_policy(fw_url_item->valuestring) || ota_url_blocked_by_policy(web_url_item->valuestring)) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Blocked by OTA security policy");
         return ESP_FAIL;
     }
 
@@ -956,9 +1074,13 @@ static esp_err_t mqtt_post_handler(httpd_req_t *req)
         }
     }
     item = cJSON_GetObjectItem(root, "host");
+    if (!item) {
+        // Backward compatibility with web app payload field name
+        item = cJSON_GetObjectItem(root, "broker");
+    }
     if (item) {
         if (!cJSON_IsString(item) || item->valuestring == NULL) {
-            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid 'host' value");
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid 'host'/'broker' value");
             cJSON_Delete(root); nvs_close(nvs);
             return ESP_FAIL;
         }
@@ -1011,6 +1133,12 @@ static esp_err_t mqtt_post_handler(httpd_req_t *req)
             return ESP_FAIL;
         }
         strcpy(new_pass, item->valuestring);
+    }
+
+    if (new_enabled && new_broker[0] == '\0') {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "MQTT enabled requires non-empty broker address ('host' or 'broker')");
+        cJSON_Delete(root); nvs_close(nvs);
+        return ESP_FAIL;
     }
 
     esp_err_t err_nvs = ESP_OK;
@@ -1367,7 +1495,7 @@ esp_err_t start_rest_server(const char *base_path)
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn = httpd_uri_match_wildcard;
-    config.max_uri_handlers = 20;
+    config.max_uri_handlers = 24;
 
     ESP_LOGI(REST_TAG, "Starting HTTP Server");
     REST_CHECK(httpd_start(&server, &config) == ESP_OK, "Start server failed", err_start);
@@ -1403,6 +1531,22 @@ esp_err_t start_rest_server(const char *base_path)
         .user_ctx = rest_context
     };
     httpd_register_uri_handler(server, &ota_progress_get_uri);
+
+    httpd_uri_t ota_security_get_uri = {
+        .uri      = "/api/v1/ota/security",
+        .method   = HTTP_GET,
+        .handler  = ota_security_get_handler,
+        .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &ota_security_get_uri);
+
+    httpd_uri_t ota_security_post_uri = {
+        .uri      = "/api/v1/ota/security",
+        .method   = HTTP_POST,
+        .handler  = ota_security_post_handler,
+        .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &ota_security_post_uri);
 
     httpd_uri_t mqtt_get_uri = {
         .uri      = "/api/v1/mqtt",

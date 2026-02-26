@@ -33,6 +33,7 @@ static void init_version_info() {
     if (err == ESP_OK) {
         size_t len;
         char version_str[32] = {0};
+        uint8_t ota_block_hardcoded = 1;
         
         // Check web_app_version
         len = sizeof(version_str);
@@ -52,6 +53,15 @@ static void init_version_info() {
             nvs_set_str(nvs, "firm_version", "0.0.0");
         } else {
             ESP_LOGI("INIT", "firm_version found: %s", version_str);
+        }
+
+        // Check OTA security policy (default ON = block hardcoded vendor update host)
+        err = nvs_get_u8(nvs, "ota_block_hc", &ota_block_hardcoded);
+        if (err != ESP_OK) {
+            ESP_LOGI("INIT", "ota_block_hc not found, setting default to 1 (error=%d)", err);
+            nvs_set_u8(nvs, "ota_block_hc", 1);
+        } else {
+            ESP_LOGI("INIT", "ota_block_hc found: %d", ota_block_hardcoded);
         }
             
         

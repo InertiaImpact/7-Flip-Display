@@ -1,4 +1,4 @@
-# Install script for directory: C:/Users/Sebastian/ESP32_Workspace/7_flip_display
+# Install script for directory: C:/Users/bsanc/OneDrive/Documents/GitHub/7-Flip-Display
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
@@ -34,12 +34,12 @@ endif()
 
 # Set path to fallback-tool for dependency-resolution.
 if(NOT DEFINED CMAKE_OBJDUMP)
-  set(CMAKE_OBJDUMP "C:/Espressif/tools/xtensa-esp-elf/esp-14.2.0_20241119/xtensa-esp-elf/bin/xtensa-esp32-elf-objdump.exe")
+  set(CMAKE_OBJDUMP "C:/Users/bsanc/.espressif/tools/xtensa-esp-elf/esp-14.2.0_20241119/xtensa-esp-elf/bin/xtensa-esp32-elf-objdump.exe")
 endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
-  include("C:/Users/Sebastian/ESP32_Workspace/7_flip_display/build/esp-idf/cmake_install.cmake")
+  include("C:/Users/bsanc/OneDrive/Documents/GitHub/7-Flip-Display/build/esp-idf/cmake_install.cmake")
 endif()
 
 if(CMAKE_INSTALL_COMPONENT)
@@ -57,6 +57,6 @@ endif()
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   string(REPLACE ";" "\n" CMAKE_INSTALL_MANIFEST_CONTENT
        "${CMAKE_INSTALL_MANIFEST_FILES}")
-  file(WRITE "C:/Users/Sebastian/ESP32_Workspace/7_flip_display/build/${CMAKE_INSTALL_MANIFEST}"
+  file(WRITE "C:/Users/bsanc/OneDrive/Documents/GitHub/7-Flip-Display/build/${CMAKE_INSTALL_MANIFEST}"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")
 endif()

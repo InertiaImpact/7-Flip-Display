@@ -147,7 +147,7 @@ typedef struct {
 
 /* MQTT Settings */
 typedef struct {
-	char topic[10]; 
+	char topic[64]; 
 } mqtt_settings_t;
 
 
